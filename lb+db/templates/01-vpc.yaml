@@ -1,0 +1,148 @@
+# templates/01-vpc.yaml
+# crea la red privada en AWS:
+#   - VPC (10.20.0.0/16):            el datacenter virtual
+#   - Subnet pública (10.20.1.0/24): donde vivirá el servidor (LB+DB)
+#   - Subnet privada (10.20.2.0/24): reservada
+#   - Internet Gateway:              puerta de salida a internet
+#   - Route Tables:                  indican por donde va el trafico
+
+AWSTemplateFormatVersion: '2010-09-09'
+Description: VPC e infraestructura de red
+
+Resources:
+
+  # -------------------------------- VPC --------------------------------
+  # virtual private network dentro de AWS
+  # todos los recursos viviran dentro de esta red
+  VpcLuka:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.20.0.0/16
+      EnableDnsHostnames: true   # permite que las instancias tengan nombre DNS
+      EnableDnsSupport: true     # activa el servidor DNS interno de AWS
+      Tags:
+        - Key: Name
+          Value: vpc-luka
+        - Key: Project
+          Value: IntegracionAWS
+
+  # -------------------------------- INTERNET GATEWAY --------------------------------
+  # El IGW es la "puerta" que conecta la VPC con Internet.
+  # Sin esto, nada dentro de la VPC puede comunicarse con el exterior.
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: igw-luka
+
+  # Asociar el IGW a la VPC (son dos recursos separados en AWS)
+  AttachIGW:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VpcLuka              # !Ref referencia el recurso VpcLuka de arriba
+      InternetGatewayId: !Ref InternetGateway
+
+  # -------------------------------- SUBNETS --------------------------------
+  # Las subnets dividen la VPC en segmentos más pequeños.
+  # Subnet pública: tiene ruta a Internet (el servidor LB+DB vive aquí)
+  SubnetPublica:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VpcLuka
+      CidrBlock: 10.20.1.0/24
+      AvailabilityZone: eu-west-1a    # IMPORTANTE: misma AZ que subnet privada
+      MapPublicIpOnLaunch: true       # Las instancias aquí reciben IP pública automáticamente
+      Tags:
+        - Key: Name
+          Value: subnet-public-luka
+
+  # Subnet privada: sin ruta directa a Internet (para recursos internos)
+  SubnetPrivada:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VpcLuka
+      CidrBlock: 10.20.2.0/24
+      AvailabilityZone: eu-west-1a    # MISMA AZ que la pública (obligatorio para peerings)
+      Tags:
+        - Key: Name
+          Value: subnet-private-luka
+
+  # -------------------------------- ROUTE TABLES --------------------------------
+  # Las route tables son como "tablas de rutas" de un router.
+  # Le dicen a AWS: "si el tráfico va hacia X, mándalo por Y".
+
+  # Route Table pública: tiene ruta a Internet a través del IGW
+  RouteTablePublica:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VpcLuka
+      Tags:
+        - Key: Name
+          Value: rt-public-luka
+
+  # Ruta por defecto: todo el tráfico sin destino específico → IGW (Internet)
+  RutaPublicaAInternet:
+    Type: AWS::EC2::Route
+    DependsOn: AttachIGW             # Esperar a que el IGW esté adjunto antes de crear la ruta
+    Properties:
+      RouteTableId: !Ref RouteTablePublica
+      DestinationCidrBlock: 0.0.0.0/0    # "cualquier destino"
+      GatewayId: !Ref InternetGateway
+
+  # Asociar la route table pública a la subnet pública
+  AsociacionPublica:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref SubnetPublica
+      RouteTableId: !Ref RouteTablePublica
+
+  # Route Table privada: sin ruta a Internet (se añadirán rutas de peering después)
+  RouteTablePrivada:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VpcLuka
+      Tags:
+        - Key: Name
+          Value: rt-private-luka
+
+  # Asociar la route table privada a la subnet privada
+  AsociacionPrivada:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref SubnetPrivada
+      RouteTableId: !Ref RouteTablePrivada
+
+# -------------------------------- OUTPUTS --------------------------------
+# Los Outputs exportan valores de este stack para que otros stacks los puedan usar.
+# Esto se llama "cross-stack reference": el stack de SG importará el VPC ID desde aquí.
+Outputs:
+  VpcId:
+    Description: ID de la VPC de Luka
+    Value: !Ref VpcLuka
+    Export:
+      Name: luka-vpc-id          # Nombre con el que otros stacks importarán este valor
+
+  SubnetPublicaId:
+    Description: ID de la subnet publica
+    Value: !Ref SubnetPublica
+    Export:
+      Name: luka-subnet-publica-id
+
+  SubnetPrivadaId:
+    Description: ID de la subnet privada
+    Value: !Ref SubnetPrivada
+    Export:
+      Name: luka-subnet-privada-id
+
+  RouteTablePublicaId:
+    Description: ID de la route table publica (se necesita para añadir rutas de peering)
+    Value: !Ref RouteTablePublica
+    Export:
+      Name: luka-rt-publica-id
+
+  RouteTablePrivadaId:
+    Description: ID de la route table privada
+    Value: !Ref RouteTablePrivada
+    Export:
+      Name: luka-rt-privada-id

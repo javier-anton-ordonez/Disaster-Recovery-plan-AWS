@@ -1,0 +1,282 @@
+# templates/03-server.yaml
+# ¿Qué hace este template?
+# Crea la única instancia EC2 de Luka (LB + DB en la misma máquina):
+#   - EC2 t3.small con Ubuntu 22.04 en la subnet pública
+#   - Elastic IP fija para que la IP no cambie al reiniciar
+#   - Key Pair para conectarse por SSH
+#   - UserData: script que instala Nginx y PostgreSQL automáticamente al arrancar
+#   - IAM Role para que la instancia pueda acceder a S3
+
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Servidor unico de Luka (Load Balancer + Database)
+
+Parameters:
+  KeyPairName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: >
+      Nombre del Key Pair SSH para conectarte al servidor.
+      Debes crearlo manualmente en EC2 -> Key Pairs antes de desplegar este template.
+    Default: key-luka
+
+  S3BucketName:
+    Type: String
+    Description: Nombre del bucket S3 central (debe ser globalmente único)
+    Default: bucket-integracion-aws-luka
+
+Resources:
+
+  # ─── IAM ROLE ─────────────────────────────────────────────────────────────
+  # El IAM Role da permisos a la instancia EC2 para acceder a otros servicios AWS.
+  # En este caso, la instancia necesita acceder al bucket S3 para hacer backups.
+  # Sin un Role, la instancia no puede llamar a la API de AWS.
+
+  RoleServidor:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: role-servidor-luka
+      # AssumeRolePolicyDocument: quién puede "asumir" este role
+      # En este caso, solo instancias EC2 pueden usarlo
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com    # Solo instancias EC2
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: AccesoS3Luka
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # Permite leer y escribir objetos en el bucket de Luka
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub 'arn:aws:s3:::${S3BucketName}'
+                  - !Sub 'arn:aws:s3:::${S3BucketName}/*'
+                  # !Sub es como f-string en Python: sustituye ${Variable} por su valor
+
+  # InstanceProfile: "envuelve" el Role para que lo pueda usar EC2
+  PerfilInstancia:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: profile-servidor-luka
+      Roles:
+        - !Ref RoleServidor
+
+  # ─── EC2 INSTANCE ─────────────────────────────────────────────────────────
+  ServidorLuka:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: ami-0905a3c97561e0b69    # Ubuntu 22.04 LTS en eu-west-1
+                                         # ⚠️ Esta AMI ID puede cambiar. Verifica en:
+                                         # EC2 -> AMIs -> busca "ubuntu-22.04" en Community AMIs
+      InstanceType: t3.small             # 2 vCPU, 2GB RAM
+      KeyName: !Ref KeyPairName
+      SubnetId: !ImportValue luka-subnet-publica-id
+      SecurityGroupIds:
+        - !ImportValue luka-sg-lb-id    # SG del Load Balancer (HTTP + SSH)
+      IamInstanceProfile: !Ref PerfilInstancia
+
+      # UserData: script bash que se ejecuta UNA SOLA VEZ al primer arranque.
+      # Este es uno de los recursos más potentes de CloudFormation:
+      # puedes automatizar toda la instalación de software.
+      # IMPORTANTE: el script va codificado en Base64 (el !Base64 lo hace automáticamente)
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          # Redirigir toda la salida a un log para poder revisar si algo falla
+          exec > /var/log/userdata.log 2>&1
+          set -e    # Parar el script si cualquier comando falla
+
+          echo "=== Iniciando instalación del servidor Luka ==="
+          echo "Fecha: $(date)"
+
+          # ── Actualizar paquetes ──────────────────────────────────────────
+          apt-get update -y
+          apt-get upgrade -y
+
+          # ── Instalar Nginx (Load Balancer) ───────────────────────────────
+          echo ">>> Instalando Nginx..."
+          apt-get install -y nginx
+
+          # Habilitar Nginx para que arranque automáticamente tras reinicios
+          systemctl enable nginx
+          systemctl start nginx
+
+          # ── Instalar PostgreSQL (Database) ───────────────────────────────
+          echo ">>> Instalando PostgreSQL..."
+          apt-get install -y postgresql postgresql-contrib
+
+          # Habilitar PostgreSQL
+          systemctl enable postgresql
+          systemctl start postgresql
+
+          # ── Instalar cliente NTP ─────────────────────────────────────────
+          # chrony es el cliente NTP moderno en Ubuntu 22.04
+          apt-get install -y chrony
+
+          # Configurar chrony para sincronizar con el AD de Raúl (10.10.X.X)
+          # NOTA: Sustituye 10.10.X.X por la IP real del AD de Raúl cuando la tengas
+          # Por ahora usamos pool.ntp.org como respaldo
+          cat > /etc/chrony/chrony.conf << 'EOF'
+          # Servidor NTP de Raúl (AD) - sustituir X.X por la IP real
+          # server 10.10.X.X iburst prefer
+          # Servidores de respaldo (pool.ntp.org)
+          pool 2.ubuntu.pool.ntp.org iburst
+          # Archivos de control
+          keyfile /etc/chrony/chrony.keys
+          driftfile /var/lib/chrony/chrony.drift
+          logdir /var/log/chrony
+          EOF
+
+          systemctl enable chrony
+          systemctl restart chrony
+
+          # ── Instalar AWS CLI v2 (para backups a S3) ──────────────────────
+          echo ">>> Instalando AWS CLI..."
+          apt-get install -y unzip curl
+          curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "/tmp/awscliv2.zip"
+          unzip /tmp/awscliv2.zip -d /tmp/
+          /tmp/aws/install
+          rm -rf /tmp/awscliv2.zip /tmp/aws
+
+          # ── Crear directorio para logs y configuraciones ─────────────────
+          mkdir -p /etc/nginx/sites-available
+          mkdir -p /etc/nginx/sites-enabled
+          mkdir -p /var/log/nginx
+
+          # ── Configuración básica de Nginx (placeholder) ──────────────────
+          # Nota: La configuración real de upstreams (con IPs de Javier, Panch, Guille)
+          # se hará manualmente por SSH después del peering, ya que necesitamos sus IPs.
+          cat > /etc/nginx/sites-available/luka-lb << 'NGINXEOF'
+          # Configuración del Load Balancer de Luka
+          # PENDIENTE: sustituir 10.30.X.X, 10.40.X.X, 10.50.X.X con IPs reales
+
+          upstream web_profesores {
+              server 10.30.2.X:80;    # Javier - Web Profesores
+          }
+
+          upstream web_alumnos {
+              server 10.40.2.X:80;    # Panch - Web Alumnos
+          }
+
+          upstream web_practicas {
+              server 10.50.2.X:80;    # Guille - Web Prácticas
+          }
+
+          server {
+              listen 80;
+              server_name _;
+
+              location /profesores {
+                  proxy_pass http://web_profesores;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+              }
+
+              location /alumnos {
+                  proxy_pass http://web_alumnos;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+              }
+
+              location /practicas {
+                  proxy_pass http://web_practicas;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+              }
+
+              location / {
+                  return 200 'Load Balancer Luka - OK';
+                  add_header Content-Type text/plain;
+              }
+          }
+          NGINXEOF
+
+          # ── Crear script de backup automático a S3 ──────────────────────
+          cat > /usr/local/bin/backup-db.sh << 'BACKUPEOF'
+          #!/bin/bash
+          # Script de backup de PostgreSQL a S3
+          DATE=$(date +%Y-%m-%d-%H%M)
+          BACKUP_FILE="/tmp/db-backup-$DATE.sql"
+          BUCKET="${S3BucketName}"    # !Sub sustituye esto por el nombre real del bucket
+
+          # Hacer dump de todas las bases de datos
+          sudo -u postgres pg_dumpall > "$BACKUP_FILE"
+
+          # Subir a S3
+          aws s3 cp "$BACKUP_FILE" "s3://$BUCKET/backups/db-backup-$DATE.sql"
+
+          # Eliminar backup local
+          rm -f "$BACKUP_FILE"
+
+          echo "Backup completado: $DATE"
+          BACKUPEOF
+
+          chmod +x /usr/local/bin/backup-db.sh
+
+          # Programar backup diario a las 02:00 AM
+          echo "0 2 * * * root /usr/local/bin/backup-db.sh >> /var/log/backup-db.log 2>&1" \
+            > /etc/cron.d/backup-postgresql
+
+          echo "=== Instalación completada exitosamente ==="
+          echo "Fecha fin: $(date)"
+          # Crear un fichero que indica que la instalación terminó bien
+          touch /var/log/userdata-complete
+
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: 30        # 30 GB de almacenamiento
+            VolumeType: gp3       # gp3 es más barato y rápido que gp2
+            DeleteOnTermination: true
+
+      Tags:
+        - Key: Name
+          Value: Server-Luka
+        - Key: Project
+          Value: IntegracionAWS
+        - Key: Owner
+          Value: Luka
+        - Key: Role
+          Value: LB-DB
+
+  # ─── ELASTIC IP ───────────────────────────────────────────────────────────
+  # Sin Elastic IP, la IP pública cambia cada vez que paras y reinicias la instancia.
+  # La Elastic IP es una IP fija que siempre apunta a tu servidor.
+  # IMPORTANTE: una EIP no asociada a una instancia tiene coste (~3€/mes).
+  #             Siempre que pares la instancia permanentemente, libera la EIP.
+  ElasticIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      InstanceId: !Ref ServidorLuka    # Asociar automáticamente a la instancia
+      Tags:
+        - Key: Name
+          Value: eip-luka
+
+Outputs:
+  ServidorId:
+    Description: ID de la instancia EC2
+    Value: !Ref ServidorLuka
+    Export:
+      Name: luka-servidor-id
+
+  ElasticIPValue:
+    Description: IP elastica publica del servidor
+    Value: !Ref ElasticIP
+    Export:
+      Name: luka-elastic-ip
+
+  IPPrivadaServidor:
+    Description: IP privada del servidor (para compartir con compañeros)
+    Value: !GetAtt ServidorLuka.PrivateIp
+    # !GetAtt (Get Attribute) obtiene un atributo específico de un recurso
+    # A diferencia de !Ref que devuelve el ID, !GetAtt permite obtener otros valores
+    Export:
+      Name: luka-ip-privada

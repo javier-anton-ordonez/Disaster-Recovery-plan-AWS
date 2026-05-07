@@ -1,0 +1,169 @@
+# templates/04-s3.yaml
+# ¿Qué hace este template?
+# Crea el bucket S3 central del proyecto:
+#   - Bucket privado (no accesible desde Internet directamente)
+#   - Versionado habilitado (importante para backups)
+#   - Política que permite acceso a los IAM Roles de Javier, Panch y Guille
+#   - Cifrado en reposo por defecto
+
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Bucket S3 central del proyecto
+
+Parameters:
+  BucketName:
+    Type: String
+    Description: Nombre del bucket (globalmente unico en AWS)
+    # El nombre debe ser único en TODO AWS, no solo en tu cuenta.
+    # Si falla el deploy, añade más números al nombre.
+
+  # ARNs de los IAM Roles de los compañeros que necesitan acceso al bucket.
+  # Pídeles sus ARNs cuando tengan sus roles creados. Formato:
+  # arn:aws:iam::ACCOUNT_ID:role/NOMBRE_DEL_ROLE
+  ARNRoleJavier:
+    Type: String
+    Description: ARN del IAM Role de Javier para acceso a S3
+    Default: "arn:aws:iam::PENDIENTE:role/role-s3-javier"
+
+  ARNRolePanch:
+    Type: String
+    Description: ARN del IAM Role de Panch para acceso a S3
+    Default: "arn:aws:iam::PENDIENTE:role/role-s3-panch"
+
+  ARNRoleGuille:
+    Type: String
+    Description: ARN del IAM Role de Guille para acceso a S3
+    Default: "arn:aws:iam::PENDIENTE:role/role-s3-guille"
+
+# Añadir esto entre Parameters y Resources:
+Conditions:
+  JavierListo: !Not [!Equals [!Ref ARNRoleJavier, "arn:aws:iam::PENDIENTE:role/role-s3-javier"]]
+  PanchListo:  !Not [!Equals [!Ref ARNRolePanch,  "arn:aws:iam::PENDIENTE:role/role-s3-panch"]]
+  GuilleListo: !Not [!Equals [!Ref ARNRoleGuille, "arn:aws:iam::PENDIENTE:role/role-s3-guille"]]
+
+Resources:
+
+  BucketCentral:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref BucketName
+
+      # Bloquear acceso público completamente (seguridad)
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+      # Versionado: guarda todas las versiones de cada objeto
+      # Útil para recuperar archivos borrados o corrompidos
+      VersioningConfiguration:
+        Status: Enabled
+
+      # Cifrado en reposo con clave gestionada por AWS (sin coste adicional)
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+      # Lifecycle: eliminar versiones antiguas para ahorrar espacio
+      LifecycleConfiguration:
+        Rules:
+          - Id: LimpiarVersionesAntiguas
+            Status: Enabled
+            NoncurrentVersionExpirationInDays: 30    # Eliminar versiones >30 días
+          - Id: LimpiarBackupsViejos
+            Status: Enabled
+            Prefix: backups/
+            ExpirationInDays: 90                     # Backups más antiguos de 90 días
+
+      Tags:
+        - Key: Name
+          Value: !Ref BucketName
+        - Key: Project
+          Value: IntegracionAWS
+        - Key: Owner
+          Value: Luka
+
+  # Política del bucket: define quién puede acceder y qué puede hacer
+  PoliticaBucket:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref BucketCentral
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          # Acceso completo para el Role del servidor de Luka
+          - Sid: AccesoServidorLuka
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:role/role-servidor-luka'
+              # AWS::AccountId es una pseudo-variable de CF que devuelve tu Account ID
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+              - s3:DeleteObject
+              - s3:ListBucket
+            Resource:
+              - !GetAtt BucketCentral.Arn
+              - !Sub '${BucketCentral.Arn}/*'
+
+          # Acceso de lectura/escritura para Javier (módulo Profesores)
+          - !If
+            - JavierListo
+            - Sid: AccesoJavier
+              Effect: Allow
+              Principal:
+                AWS: !Ref ARNRoleJavier
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+                - s3:ListBucket
+              Resource:
+                - !GetAtt BucketCentral.Arn
+                - !Sub '${BucketCentral.Arn}/profesores/*'  # Solo carpeta de profesores
+            - !Ref AWS::NoValue   # ← CF omite este statement si la condición es falsa
+
+          # Acceso para Panch (módulo Alumnos)
+          - !If
+            - PanchListo
+            - Sid: AccesoPanch
+              Effect: Allow
+              Principal:
+                AWS: !Ref ARNRolePanch
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+                - s3:ListBucket
+              Resource:
+                - !GetAtt BucketCentral.Arn
+                - !Sub '${BucketCentral.Arn}/alumnos/*'
+            - !Ref AWS::NoValue
+
+          # Acceso para Guille (módulo Prácticas)
+          - !If
+            - GuilleListo
+            - Sid: AccesoGuille
+              Effect: Allow
+              Principal:
+                AWS: !Ref ARNRoleGuille
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+                - s3:ListBucket
+              Resource:
+                - !GetAtt BucketCentral.Arn
+                - !Sub '${BucketCentral.Arn}/practicas/*'
+            - !Ref AWS::NoValue
+
+Outputs:
+  BucketNombre:
+    Description: Nombre del bucket S3 central
+    Value: !Ref BucketCentral
+    Export:
+      Name: luka-s3-bucket-name
+
+  BucketARN:
+    Description: ARN del bucket S3
+    Value: !GetAtt BucketCentral.Arn
+    Export:
+      Name: luka-s3-bucket-arn

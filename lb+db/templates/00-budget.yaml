@@ -1,0 +1,60 @@
+# templates/00-budget.yaml
+# crea una alerta de presupuesto mensual para AWS
+
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Budget y alertas de coste
+
+Parameters:
+  # los parameters son variables de entrada, asi el template es reutilizable.
+  AlertEmail:
+    Type: String
+    Description: Email donde recibir las alertas de coste
+    # al desplegar el stack AWS pedira este valor
+
+Resources:
+  # cada recurso tiene:
+  #   - un nombre logico (LukaBudget)           - solo existe dentro de CF
+  #   - Un type          (AWS::Budgets::Budget) - el tipo de recurso AWS
+  #   - properties                              - la configuracion del recurso
+
+  LukaBudget:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget:
+        BudgetName: budget-luka-proyecto
+        BudgetType: COST
+        TimeUnit: MONTHLY
+        BudgetLimit:
+          Amount: 20          # 20 euros (dollars actually)
+          Unit: USD           # AWS budgets normalizes verything to USD regardless of region
+
+      NotificationsWithSubscribers:
+        # alerta al 50% (10€)
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 50
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref AlertEmail    # !Ref toma el valor del Parameter AlertEmail
+
+        # alerta al 80% (16€)
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 80
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref AlertEmail
+
+        # alerta al 100% (20€)
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 100
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref AlertEmail

@@ -1,0 +1,175 @@
+# templates/05-peerings.yaml
+# ¿Qué hace este template?
+# Crea las VPC Peering Connections entre la VPC de Luka y las de sus compañeros.
+# Un VPC Peering es un "túnel" privado entre dos VPCs que permite comunicación directa.
+#
+# FLUJO:
+# 1. Luka crea el peering (estado: "pending-acceptance")
+# 2. El compañero acepta el peering (estado: "active")
+# 3. Ambos añaden rutas en sus Route Tables
+#
+# IMPORTANTE: Este template solo hace el paso 1 (crear el peering).
+# Los compañeros deben aceptar DESDE SUS CUENTAS (paso 2).
+# Las rutas en las RT de Luka las añade este mismo template (paso 3a).
+# Las rutas en las RT de los compañeros las añaden ellos (paso 3b).
+
+AWSTemplateFormatVersion: '2010-09-09'
+Description: VPC Peerings de Luka con todos los compañeros
+
+Parameters:
+  # ── Datos de Raúl ─────────────────────────────────────────────────────────
+  AccountIDRaul:
+    Type: String
+    Description: Account ID de AWS de Raul (12 digitos)
+  VPCIDRaul:
+    Type: String
+    Description: VPC ID de Raul (ej vpc-0abc123def456)
+
+  # ── Datos de Javier ───────────────────────────────────────────────────────
+  AccountIDJavier:
+    Type: String
+    Description: Account ID de AWS de Javier
+  VPCIDJavier:
+    Type: String
+    Description: VPC ID de Javier
+
+  # ── Datos de Panch ────────────────────────────────────────────────────────
+  AccountIDPanch:
+    Type: String
+    Description: Account ID de AWS de Panch
+  VPCIDPanch:
+    Type: String
+    Description: VPC ID de Panch
+
+  # ── Datos de Guille ───────────────────────────────────────────────────────
+  AccountIDGuille:
+    Type: String
+    Description: Account ID de AWS de Guille
+  VPCIDGuille:
+    Type: String
+    Description: VPC ID de Guille
+
+Resources:
+
+  # ─── PEERING CON RAÚL (AD - 10.10.0.0/16) ────────────────────────────────
+  PeeringRaul:
+    Type: AWS::EC2::VPCPeeringConnection
+    Properties:
+      VpcId: !ImportValue luka-vpc-id       # VPC de Luka (la que pide el peering)
+      PeerVpcId: !Ref VPCIDRaul            # VPC de Raúl (la que recibe)
+      PeerOwnerId: !Ref AccountIDRaul      # Account ID de Raúl (cross-account)
+      PeerRegion: eu-west-1
+      Tags:
+        - Key: Name
+          Value: peering-luka-raul
+
+  # Ruta en RT pública de Luka → hacia la red de Raúl a través del peering
+  RutaPublicaARaul:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !ImportValue luka-rt-publica-id
+      DestinationCidrBlock: 10.10.0.0/16    # Red de Raúl
+      VpcPeeringConnectionId: !Ref PeeringRaul
+
+  # Ruta en RT privada de Luka → hacia la red de Raúl
+  RutaPrivadaARaul:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !ImportValue luka-rt-privada-id
+      DestinationCidrBlock: 10.10.0.0/16
+      VpcPeeringConnectionId: !Ref PeeringRaul
+
+  # ─── PEERING CON JAVIER (Profesores - 10.30.0.0/16) ──────────────────────
+  PeeringJavier:
+    Type: AWS::EC2::VPCPeeringConnection
+    Properties:
+      VpcId: !ImportValue luka-vpc-id
+      PeerVpcId: !Ref VPCIDJavier
+      PeerOwnerId: !Ref AccountIDJavier
+      PeerRegion: eu-west-1
+      Tags:
+        - Key: Name
+          Value: peering-luka-javier
+
+  RutaPublicaAJavier:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !ImportValue luka-rt-publica-id
+      DestinationCidrBlock: 10.30.0.0/16
+      VpcPeeringConnectionId: !Ref PeeringJavier
+
+  RutaPrivadaAJavier:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !ImportValue luka-rt-privada-id
+      DestinationCidrBlock: 10.30.0.0/16
+      VpcPeeringConnectionId: !Ref PeeringJavier
+
+  # ─── PEERING CON PANCH (Alumnos - 10.40.0.0/16) ──────────────────────────
+  PeeringPanch:
+    Type: AWS::EC2::VPCPeeringConnection
+    Properties:
+      VpcId: !ImportValue luka-vpc-id
+      PeerVpcId: !Ref VPCIDPanch
+      PeerOwnerId: !Ref AccountIDPanch
+      PeerRegion: eu-west-1
+      Tags:
+        - Key: Name
+          Value: peering-luka-panch
+
+  RutaPublicaAPanch:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !ImportValue luka-rt-publica-id
+      DestinationCidrBlock: 10.40.0.0/16
+      VpcPeeringConnectionId: !Ref PeeringPanch
+
+  RutaPrivadaAPanch:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !ImportValue luka-rt-privada-id
+      DestinationCidrBlock: 10.40.0.0/16
+      VpcPeeringConnectionId: !Ref PeeringPanch
+
+  # ─── PEERING CON GUILLE (Prácticas - 10.50.0.0/16) ───────────────────────
+  PeeringGuille:
+    Type: AWS::EC2::VPCPeeringConnection
+    Properties:
+      VpcId: !ImportValue luka-vpc-id
+      PeerVpcId: !Ref VPCIDGuille
+      PeerOwnerId: !Ref AccountIDGuille
+      PeerRegion: eu-west-1
+      Tags:
+        - Key: Name
+          Value: peering-luka-guille
+
+  RutaPublicaAGuille:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !ImportValue luka-rt-publica-id
+      DestinationCidrBlock: 10.50.0.0/16
+      VpcPeeringConnectionId: !Ref PeeringGuille
+
+  RutaPrivadaAGuille:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !ImportValue luka-rt-privada-id
+      DestinationCidrBlock: 10.50.0.0/16
+      VpcPeeringConnectionId: !Ref PeeringGuille
+
+Outputs:
+  PeeringRaulId:
+    Description: ID del peering con Raul (pasalo a Raul para que lo acepte)
+    Value: !Ref PeeringRaul
+
+  PeeringJavierId:
+    Description: ID del peering con Javier
+    Value: !Ref PeeringJavier
+
+  PeeringPanchId:
+    Description: ID del peering con Panch
+    Value: !Ref PeeringPanch
+
+  PeeringGuilleId:
+    Description: ID del peering con Guille
+    Value: !Ref PeeringGuille

@@ -1,0 +1,140 @@
+# templates/02-security-groups.yaml
+# ¿Qué hace este template?
+# Crea los firewalls (Security Groups) para el servidor de Luka:
+#   - sg-lb-luka: permite tráfico HTTP/SSH al Load Balancer
+#   - sg-db-luka: permite tráfico PostgreSQL solo desde las VPCs de los web servers
+
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Security Groups para Luka (LB + DB)
+
+Parameters:
+  MiIPPublica:
+    Type: String
+    Description: >
+      Tu IP pública actual en formato CIDR (ej: 85.12.34.56/32).
+      Busca tu IP en https://checkip.amazonaws.com
+
+Resources:
+
+  # ─── SG LOAD BALANCER ────────────────────────────────────────────────────
+  # Este SG se aplica al servidor que recibe peticiones web.
+  SGLoadBalancer:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: lb-luka
+      GroupDescription: Security Group para el Load Balancer de Luka
+      # !ImportValue lee un Output exportado de otro stack (aquí, del stack luka-vpc)
+      VpcId: !ImportValue luka-vpc-id
+      SecurityGroupIngress:
+        # Puerto 80: tráfico HTTP desde cualquier lugar de Internet
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: HTTP desde Internet
+
+        # Puerto 443: HTTPS (para el futuro)
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: HTTPS desde Internet
+
+        # Puerto 22: SSH solo desde tu IP (no desde Internet en general)
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref MiIPPublica    # Tu IP, pasada como Parameter
+          Description: SSH solo desde mi IP
+
+      # Outbound: permitir todo el tráfico saliente
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: Todo el trafico saliente permitido
+
+      Tags:
+        - Key: Name
+          Value: sg-lb-luka
+        - Key: Project
+          Value: IntegracionAWS
+
+  # ─── SG DATABASE ─────────────────────────────────────────────────────────
+  # Este SG restringe quién puede conectarse a PostgreSQL (puerto 5432).
+  # Solo los web servers de Javier, Panch y Guille deben poder conectar.
+  SGDB:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: db-luka
+      GroupDescription: Security Group para la base de datos PostgreSQL de Luka
+      VpcId: !ImportValue luka-vpc-id
+      SecurityGroupIngress:
+        # PostgreSQL desde la VPC de Javier (Profesores - 10.30.0.0/16)
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          CidrIp: 10.30.0.0/16
+          Description: PostgreSQL desde VPC de Javier (Profesores)
+
+        # PostgreSQL desde la VPC de Panch (Alumnos - 10.40.0.0/16)
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          CidrIp: 10.40.0.0/16
+          Description: PostgreSQL desde VPC de Panch (Alumnos)
+
+        # PostgreSQL desde la VPC de Guille (Prácticas - 10.50.0.0/16)
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          CidrIp: 10.50.0.0/16
+          Description: PostgreSQL desde VPC de Guille (Practicas)
+
+        # PostgreSQL desde la propia VPC de Luka (el LB conecta a la DB localmente)
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          CidrIp: 10.20.0.0/16
+          Description: PostgreSQL desde la propia VPC de Luka
+
+        # SSH para administración
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref MiIPPublica
+          Description: SSH solo desde mi IP
+
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: Todo el trafico saliente permitido
+
+      Tags:
+        - Key: Name
+          Value: sg-db-luka
+
+  # ─── REGLA NTP ────────────────────────────────────────────────────────────
+  # Regla adicional al SG del LB: permite recibir respuestas NTP de Raúl (AD).
+  # NTP usa UDP puerto 123. El servidor de Raúl está en 10.10.0.0/16.
+  ReglaNTPEntrada:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref SGLoadBalancer
+      IpProtocol: udp
+      FromPort: 123
+      ToPort: 123
+      CidrIp: 10.10.0.0/16
+      Description: NTP desde AD de Raul
+
+Outputs:
+  SGLoadBalancerId:
+    Description: ID del Security Group del Load Balancer
+    Value: !Ref SGLoadBalancer
+    Export:
+      Name: luka-sg-lb-id
+
+  SGDBId:
+    Description: ID del Security Group de la base de datos
+    Value: !Ref SGDB
+    Export:
+      Name: luka-sg-db-id
